@@ -1,0 +1,18 @@
+# feature vector dimensions: det, n, v, sg, pl
+the:
+    phon_form: the
+    head: [1, 0, 0, 0.5, 0.5]
+    dependents: !!null
+
+dog:
+    phon_form: dog
+    head: [0, 1, 0, 1, 0]
+    dependents:
+        Det: [1, 0, 0, 1, 0]
+
+eats:
+    phon_form: eats
+    head: [0, 0, 1, 1, 0]
+    dependents:
+        Subj: [0, 1, 0, 1, 0]
+        DO: [0, 1, 0, 0.5, 0.5]
