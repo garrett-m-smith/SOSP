@@ -1,4 +1,9 @@
 # feature vector dimensions: det, n, v, sg, pl
+EMPTY:
+    phon_form: EMPTY
+    head: [0, 0, 0, 0, 0]
+    dependents: !!null
+
 the:
     phon_form: the
     head: [1, 0, 0, 0.5, 0.5]
