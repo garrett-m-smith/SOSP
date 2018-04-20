@@ -86,9 +86,35 @@ class Struct(object):
         self.nfeat_dims = len(per_position) * self.max_sent_length
         return all_names
 
-    def _find_allowed_centers(self):
-        """Finds all allowed centers given the constraints on link formation.
+    def _find_possible_sequences(self):
+        """Finds all word sequences upto max_sentence_lengths.
         """
+        # One approach: for each possible sequence of words, find all allowed
+        # feature/link combinations.
+        non_empty = {k: self.lexicon[k] for k in self.lexicon
+                     if k not in 'EMPTY'}
+        word_seqs = []  # For storing all possible sequences of words
+        for i in range(self.max_sent_length):
+            pr = product(non_empty, repeat=i+1)
+            word_seqs.extend([list(x) for x in pr])
+        for i in range(len(word_seqs)):
+            curr_len = len(word_seqs[i])
+            if curr_len < self.max_sent_length:
+                word_seqs[i].extend(['EMPTY'] * (self.max_sent_length
+                                                 - curr_len))
+        return word_seqs
+
+    def _find_allowed_centers(self):
+        """Will return a NumPy array with a center on each row.
+        """
+        # Approach: create the centers by gradually going through chunks of
+        # the dimensions, drawing features from the lexicon. When you get to
+        # the link dimensions, we can enforce the one-licensor constraint by
+        # noting that the link attaching to the head of each word at each
+        # position, e.g., L_W0_the_*, is mutually exclusive of all the other
+        # L_W0_the_*. Might need to build in extra dimensions yet, though, for
+        # links to the Null node...
+        seqs = self._find_possible_sequences()
         return
 
     def _find_actual_attr_locations(self):
@@ -104,6 +130,6 @@ if __name__ == '__main__':
     sys.lexicon
 #    print(sys.dim_names)
     print('Number of dimensions', sys.ndim)
-    print(*sys.dim_names, sep='\n')
+    #print(*sys.dim_names, sep='\n')
 
 # Creating 1-hot phonological form vectors: nwords = len(lex.keys())
