@@ -1,12 +1,18 @@
 # feature vector dimensions: det, n, v, sg, pl
+# Current kludge: explicitly providing all versions of ambiguous words/dependents
 EMPTY:
     phon_form: EMPTY
     head: [0, 0, 0, 0, 0]
     dependents: !!null
 
-the:
+the_sg:
     phon_form: the
-    head: [1, 0, 0, 0.5, 0.5]
+    head: [1, 0, 0, 1, 0]
+    dependents: !!null
+
+the_pl:
+    phon_form: the
+    head: [1, 0, 0, 0, 1]
     dependents: !!null
 
 dog:
@@ -15,9 +21,15 @@ dog:
     dependents:
         Det: [1, 0, 0, 1, 0]
 
-eats:
+eats_DO_sg:
     phon_form: eats
     head: [0, 0, 1, 1, 0]
     dependents:
         Subj: [0, 1, 0, 1, 0]
-        DO: [0, 1, 0, 0.5, 0.5]
+        DO: [0, 1, 0, 1, 0]
+eats_DO_pl:
+    phon_form: eats
+    head: [0, 0, 1, 1, 0]
+    dependents:
+        Subj: [0, 1, 0, 1, 0]
+        DO: [0, 1, 0, 0, 1]

@@ -22,10 +22,20 @@ UPDATE (05/03): Now doing the same thing for the dependent features: for each
 dependent, there will be a single set of features instead of, e.g, dog-specific
 dependent features.
 
+UPDATE (05/04): Ambiguous words are disambiguated in the lexicon file, but if
+they share a phonological form, only a single lexeme is used for making the
+dimension names.
+
+POSSIBLITY FOR REDUCING NUMBER OF DIMENSIONS: Have a full lexicon (like now),
+but if only want to consider particular sequences, add a method for removing
+sequences that aren't in the to-be-provided corpus.
+
 For now at least, don't use root/apex node and don't allow fragmentary
 structures (obviates need for null attch.)
 
 Init state w/ all EMPTYs should have harmony of ~0.25 so stable, but not too...
+
+How to handle optional dependents?
 
 Later, add visualization by plotting overlap between current state and centers
 """
@@ -33,7 +43,7 @@ Later, add visualization by plotting overlap between current state and centers
 import yaml
 from itertools import product
 import numpy as np
-#from numba import jit
+# from numba import jit
 
 
 class Struct(object):
@@ -54,12 +64,16 @@ class Struct(object):
 
         if lex_file is not None:
             self.lexicon = self._import_lexicon(lex_file)
+            self.phon_forms = []
+            for w in self.lexicon:
+                self.phon_forms.append(self.lexicon[w]['phon_form'])
             self.nwords = len(self.lexicon)
             self.pos_names = self._name_pos_dims()
             self.link_names = self._name_links()
             self.dim_names = self.pos_names + self.link_names
             self.ndim = len(self.pos_names) + len(self.link_names)
             self.idx_phon = {j: i for i, j in enumerate(self.lexicon.keys())}
+            self.idx_head_feat = slice(self.nwords, self.nwords+self.nfeatures)
             self.word_vecs = self._make_word_vecs()
         else:
             print('No lexicon loaded')
@@ -121,7 +135,7 @@ class Struct(object):
 
     def _make_seq_vecs(self):
         """Returns a list of sequence vectors in which each element holds word
-        vectors concatenated together. Removes
+        vectors concatenated together.
         """
         word_vec = self._make_word_vecs()
 #        print(word_vec)
@@ -149,7 +163,7 @@ class Struct(object):
 #        pruned = filter(lambda y: sum(y) <= nlinks, too_many_links)
         pruned = [x for x in too_many_links if sum(x) <= nlinks]
 #        links = gen_nlinks_vectors(link_names, self.nlinks)
-        return pruned
+        return list(map(list, pruned))
 
     def _prune_links(self):
         """Returns an array of link vectors after removing the ones disallowed
@@ -197,10 +211,13 @@ class Struct(object):
     def _name_pos_dims(self):
         """Returns a list of the dimension names. There are always ndep
         dependents at a position regardless of what word is in that position.
+        Also only creates one phonological form for ambiguous words, like
+        'the_sg' and 'the_pl.'
         """
         assert self.lexicon is not None, 'Must initialize lexicon.'
         per_position = []
-        for word in self.lexicon:
+#        for word in self.lexicon:
+        for word in self.phon_forms:
             per_position.append(word)
         for feat in self.features:
             per_position.append(feat)
@@ -224,22 +241,79 @@ class Struct(object):
     def _gen_centers(self):
         """Will return a NumPy array with a center on each row.
 
+        Because links are only care about sentence position and attch. site,
+        don't have to worry about what words are in the positions, except to
+        make sure they allow dependents.
+
         Note: need to create 2 different centers when there's a 0.5 in the vec
-        Also: how to handle partial parses and short sentences? Already
-        included in the link configurations vectors.
         """
-        seq_vecs = self._make_seq_vecs()
-        seq_names = self._name_seqs()
-        assert len(seq_vecs) == len(seq_names), \
-            'Number of sequence vectors mismatches number of sequence names.'
-        link_vecs = self._prune_links()
         # Notes: link vec of zeros is always possible, no matter how many words
         # have been input. No links turned on after reading first word.
         # As words come in, can only allow centers with them attching somehow
         # to previous words, not looking ahead.
-        # Outline of alg.: use for loop to loop through words in the seq. W/i
-        # that loop, first create 'Wn' which can then be used via link_names
-        # to look up the right link dimension that should be turned on.
+        seq_vecs = self._make_seq_vecs()
+        seq_names = self._name_seqs()
+        assert len(seq_vecs) == len(seq_names), \
+            'Number of sequence vectors mismatches number of sequence names.'
+        link_names = self._name_links()
+        link_vecs = self._prune_links()
+        centers = []
+        # Cycle through seqs and find allowed links
+        for seq_name, seq in zip(seq_names, seq_vecs):
+            curr_seq = seq.copy()
+            if seq_name[0] == 'EMPTY':
+                # Assumes 0th link vec is one with no links!
+                centers.append(curr_seq + link_vecs[0])
+            elif seq_name[1] == 'EMPTY':
+                centers.append(curr_seq + link_vecs[0])
+            else:
+#                configs_to_use = link_vecs.copy()
+                # Need to exclude attchs. to EMPTYs
+                try:
+                    first_empty = seq_name.index('EMPTY')
+                    empties = ['W' + str(i) for i in
+                               range(first_empty, self.max_sent_length)]
+                    # Indexing the dimensions that have links to EMPTYs
+                    empty_idx = [i for i, ln in enumerate(link_names) for e in
+                           empties if e not in ln]
+                except ValueError:
+                    empty_idx = []
+                to_rm = []
+                for lconfig in link_vecs:
+                    for i in empty_idx:
+                        if lconfig[i] != 0:
+                            to_rm.append(lconfig)
+                # Now removing link configs if they link to a non-existent
+                # dependent
+                for word_nr, word in enumerate(seq_name):
+                    if self.lexicon[word]['dependents'] is None:
+                        null_attch = ['W' + str(word_nr) + '_' + 'd'
+                                      + str(j) for j in range(self.ndep)]
+                        null_idx = [i for i, ln in enumerate(link_names)
+                                    for n in null_attch if n in ln]
+                        for lconfig in link_vecs:
+                            for i in null_idx:
+                                if lconfig[i] != 0:
+                                    to_rm.append(lconfig)
+                    elif len(self.lexicon[word]['dependents']) < self.ndep:
+                        null_attch = ['W' + str(word_nr) + '_' + 'd'
+                                      + str(j) for j in
+                                      range(1, self.ndep)]
+                        null_idx = [i for i, ln in enumerate(link_names)
+                                    for n in null_attch if n in ln]
+                        for lconfig in link_vecs:
+                            for i in null_idx:
+                                if lconfig[i] != 0:
+                                    to_rm.append(lconfig)
+                configs_to_use = [c for c in link_vecs if c not in to_rm]
+                for config in configs_to_use:
+                    centers.append(curr_seq + config)
+        # Making sure there are no duplicates
+#        unique_centers = list(dict.fromkeys(centers))
+        print('Number of centers generated: {}'.format(len(centers)))
+        centers_array = np.array(centers)
+        centers_array[centers_array < 0] = 0.0  # Getting rid of -1s
+        return centers_array
 
     def _calculate_local_harmonies(self):
         """Cycle through the centers and use self.lexicon to look up features.
@@ -254,9 +328,13 @@ class Struct(object):
 
 if __name__ == '__main__':
     file = './test.yaml'
-    sys = Struct(lex_file=file, features=None, max_sent_length=2)
+    sent_len = 4
+    sys = Struct(lex_file=file, features=None, max_sent_length=sent_len)
 #    sys.lexicon
 #    print(sys.dim_names)
 #    print('Number of dimensions', sys.ndim)
     # print(*sys.dim_names, sep='\n')
 #    link_vecs = sys._prune_links()
+#    print('Number of link configurations: {}'.format(len(sys._prune_links())))
+#    print('Number of sequences: {}'.format(len(sys._make_seq_vecs())))
+    print('Number of centers: {}'.format(len(sys._gen_centers())))
