@@ -26,10 +26,10 @@ eats_DO_sg:
     head: [0, 0, 1, 1, 0]
     dependents:
         Subj: [0, 1, 0, 1, 0]
-        DO: [0, 1, 0, 1, 0]
+#        DO: [0, 1, 0, 1, 0]
 eats_DO_pl:
     phon_form: eats
     head: [0, 0, 1, 1, 0]
     dependents:
         Subj: [0, 1, 0, 1, 0]
-        DO: [0, 1, 0, 0, 1]
+#        DO: [0, 1, 0, 0, 1]

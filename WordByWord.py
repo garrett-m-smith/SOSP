@@ -28,10 +28,11 @@ dimension names.
 
 POSSIBLITY FOR REDUCING NUMBER OF DIMENSIONS: Have a full lexicon (like now),
 but if only want to consider particular sequences, add a method for removing
-sequences that aren't in the to-be-provided corpus.
+sequences that aren't in the to-be-provided corpus. Also, putting in info about
+the expected direction of dependents would reduce the number of dim. Finally,
+after calculating harmonies, could eliminate very low-harmony centers.
 
-For now at least, don't use root/apex node and don't allow fragmentary
-structures (obviates need for null attch.)
+For now at least, don't use root/apex node
 
 Init state w/ all EMPTYs should have harmony of ~0.25 so stable, but not too...
 
@@ -44,16 +45,20 @@ import yaml
 from itertools import product
 import numpy as np
 # from numba import jit
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class Struct(object):
-    def __init__(self, lex_file=None, features=None, max_sent_length=10):
+    def __init__(self, lex_file=None, features=None, max_sent_length=10,
+                 missing_link_cost=0.01):
         self.max_sent_length = max_sent_length
         self.ndim_per_position = 0
         # Maximum number of possible dependents; change to be fn. that calc.s
         # after reading in lex.
         self.ndep = 2
         self.max_links = self.max_sent_length - 1
+        self.missing_link_cost = missing_link_cost  # Multiplier for missing links
 
         if features is None:
             self.features = ['Det', 'N', 'V', 'sg', 'pl']
@@ -64,16 +69,22 @@ class Struct(object):
 
         if lex_file is not None:
             self.lexicon = self._import_lexicon(lex_file)
-            self.phon_forms = []
+            pf = []
             for w in self.lexicon:
-                self.phon_forms.append(self.lexicon[w]['phon_form'])
+                pf.append(self.lexicon[w]['phon_form'])
+            self.phon_forms = list(dict.fromkeys(pf))
             self.nwords = len(self.lexicon)
+            self.nphon_forms = len(self.phon_forms)
             self.pos_names = self._name_pos_dims()
             self.link_names = self._name_links()
             self.dim_names = self.pos_names + self.link_names
-            self.ndim = len(self.pos_names) + len(self.link_names)
-            self.idx_phon = {j: i for i, j in enumerate(self.lexicon.keys())}
-            self.idx_head_feat = slice(self.nwords, self.nwords+self.nfeatures)
+            self.ndim = len(self.dim_names)
+            self.idx_words = {j: i for i, j in enumerate(self.lexicon.keys())}
+            self.idx_phon_feat = slice(0, self.nphon_forms)
+            self.idx_phon_dict = {j: i for i, j in enumerate(self.phon_forms)}
+            self.idx_head_feat = slice(self.nphon_forms, self.nphon_forms
+                                       + self.nfeatures)
+            self.idx_links = slice(len(self.pos_names), len(self.dim_names))
             self.word_vecs = self._make_word_vecs()
         else:
             print('No lexicon loaded')
@@ -94,8 +105,9 @@ class Struct(object):
         word_list = []
         for word in self.lexicon:
             curr = []
-            phon = [0.] * self.nwords
-            phon[self.idx_phon[word]] = 1.0
+            word_phon = self.lexicon[word]['phon_form']
+            phon = [0.] * self.nphon_forms
+            phon[self.idx_phon_dict[word_phon]] = 1.0
             curr.extend([i for i in phon])
             curr.extend(self.lexicon[word]['head'])
 #            curr_ndeps = len(self.lexicon[word])
@@ -139,12 +151,12 @@ class Struct(object):
         """
         word_vec = self._make_word_vecs()
 #        print(word_vec)
-        seqs = self._name_seqs()
+        seq_names = self._name_seqs()
         seq_vecs = []
-        for seq in seqs:
+        for seq in seq_names:
             curr_seq = []
             for word in seq:
-                curr_word = self.idx_phon[word]
+                curr_word = self.idx_words[word]
                 curr_seq.extend(word_vec[curr_word])
             seq_vecs.append(curr_seq)
         return seq_vecs
@@ -305,19 +317,76 @@ class Struct(object):
                             for i in null_idx:
                                 if lconfig[i] != 0:
                                     to_rm.append(lconfig)
+                    # Finally, removing links to/from EMPTYs
+                    if word == 'EMPTY':
+                        idx = [i for i, ln in enumerate(link_names)
+                               if 'W' + str(word_nr) in ln]
+                        for lconfig in link_vecs:
+                            if any([lconfig[j] for j in idx]):
+                                to_rm.append(lconfig)
+                # Excluding to_rm
                 configs_to_use = [c for c in link_vecs if c not in to_rm]
                 for config in configs_to_use:
                     centers.append(curr_seq + config)
-        # Making sure there are no duplicates
-#        unique_centers = list(dict.fromkeys(centers))
-        print('Number of centers generated: {}'.format(len(centers)))
-        centers_array = np.array(centers)
+        # Getting rid of duplicates
+        ctuple = map(tuple, centers)
+        centers_unique = list(dict.fromkeys(ctuple))
+        centers_array = np.array(centers_unique)
         centers_array[centers_array < 0] = 0.0  # Getting rid of -1s
-        return centers_array
+        self.centers = centers_array
+        print('Number of centers generated: {}'.format(centers_array.shape[0]))
+        return
+
+    def which_nonzero(self, center):
+        """Returns the names of the dimensions in a cetner that are non-zero.
+        """
+        idx = list(np.where(center != 0)[0])
+        return [self.dim_names[i] for i in idx]
+
+    def hamming_dist(self, vec0, vec1):
+        return sum(f0 != f1 for f0, f1 in zip(vec0, vec1))
+
+    def feat_match(self, vec0, vec1):
+        assert len(vec0) == len(vec1), 'Feature vectors not of equal length'
+        return 1 - (self.hamming_dist(vec0, vec1) / len(vec0))
 
     def _calculate_local_harmonies(self):
         """Cycle through the centers and use self.lexicon to look up features.
         """
+        # Pos. approach: look at which links are active and where they connect
+        # to. From there, look up features in self.lexicon and calculate
+        # harmony in np.array
+        local_harmonies = np.ones(self.centers.shape[0])
+        for c, center in enumerate(self.centers):
+            nonzero = self.which_nonzero(self.centers[c])
+            active_links = [nonzero[i] for i, dim in enumerate(nonzero)
+                            if 'L_' in dim]
+            if not active_links:  # if list is empty
+                local_harmonies[c] = self.missing_link_cost**self.max_links
+            else:
+                for link in active_links:
+                    # get feat vecs
+                    _, dep_word_nr, head_word_nr, head_dep = link.split('_')
+                    # Just the position number
+                    dep_nr = int(dep_word_nr[1])
+                    dep_slice = slice(dep_nr * self.ndim_per_position
+                                      + self.nphon_forms,
+                                      dep_nr * self.ndim_per_position
+                                      + self.nphon_forms + self.nfeatures)
+                    v0 = center[dep_slice]
+                    head_str = '_'.join([head_word_nr, head_dep])
+                    tmp = [i for i, x in enumerate(self.pos_names) if head_str
+                           in x]
+                    head_slice = slice(tmp[0], tmp[0] + self.nfeatures)
+                    v1 = center[head_slice]
+                    local_harmonies[c] *= self.feat_match(v0, v1)
+                if len(active_links) < self.max_links:
+                    # Penalizing for missing links
+                    local_harmonies[c] *= (self.missing_link_cost**
+                                           (self.max_links -
+                                            len(active_links)))
+        self.local_harmonies = local_harmonies
+        return
 
     def _locate_attrs(self):
         """Use Newton's method (?) to find actual locations of attractors
@@ -328,7 +397,7 @@ class Struct(object):
 
 if __name__ == '__main__':
     file = './test.yaml'
-    sent_len = 4
+    sent_len = 2
     sys = Struct(lex_file=file, features=None, max_sent_length=sent_len)
 #    sys.lexicon
 #    print(sys.dim_names)
@@ -337,4 +406,10 @@ if __name__ == '__main__':
 #    link_vecs = sys._prune_links()
 #    print('Number of link configurations: {}'.format(len(sys._prune_links())))
 #    print('Number of sequences: {}'.format(len(sys._make_seq_vecs())))
-    print('Number of centers: {}'.format(len(sys._gen_centers())))
+    sys._gen_centers()
+    sys._calculate_local_harmonies()
+    sns.distplot(sys.local_harmonies, kde=False, rug=True)
+    idx = np.where(sys.local_harmonies > 0.8)
+    tmp = sys.centers[idx]
+    for c in tmp:
+        print(sys.which_nonzero(c))
