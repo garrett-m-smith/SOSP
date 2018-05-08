@@ -42,12 +42,12 @@ def iterate(x, centers, harmonies, gamma):
     return dx
 
 
-def euclid_stop(x, centers, tol):
-    """Returns True if not within a certain radius of a center.
+def euclid_stop(x, attrs, tol):
+    """Returns True if not within a certain radius of an attractor.
     """
     if len(x.shape) == 1:
         x = x.reshape(1, -1)
-    dists = cdist(centers, x, metric='euclidean')
+    dists = cdist(attrs, x, metric='euclidean')
     if np.any(dists < tol):
         return False
     else:

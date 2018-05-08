@@ -47,18 +47,32 @@ import numpy as np
 # from numba import jit
 import matplotlib.pyplot as plt
 import seaborn as sns
+from dynamics import calc_harmony, iterate, euclid_stop, vel_stop
+from scipy.optimize import minimize  # fmin, basinhopping
 
 
 class Struct(object):
     def __init__(self, lex_file=None, features=None, max_sent_length=10,
-                 missing_link_cost=0.01):
+                 missing_link_cost=0.01, gamma=0.25,
+                 stopping_crit='euclid_stop'):
         self.max_sent_length = max_sent_length
         self.ndim_per_position = 0
         # Maximum number of possible dependents; change to be fn. that calc.s
         # after reading in lex.
         self.ndep = 2
         self.max_links = self.max_sent_length - 1
-        self.missing_link_cost = missing_link_cost  # Multiplier for missing links
+        # Multiplier for missing links
+        self.missing_link_cost = missing_link_cost
+        self.gamma = gamma
+        if stopping_crit == 'vel_stop':
+            self.stopping_crit = vel_stop
+        else:
+            self.stopping_crit = euclid_stop
+
+        self.tau = 0.01  # Time step for discretized dynamics
+        self.max_time = 2000  # Max. number of time steps
+        self.noise_mag = 0.001  # default
+        self.tol = 0.05  # Stopping tolerance on each dim.
 
         if features is None:
             self.features = ['Det', 'N', 'V', 'sg', 'pl']
@@ -159,6 +173,7 @@ class Struct(object):
                 curr_word = self.idx_words[word]
                 curr_seq.extend(word_vec[curr_word])
             seq_vecs.append(curr_seq)
+        self.seq_vecs = seq_vecs
         return seq_vecs
 
     def _gen_nlinks_vectors(self, link_names, nlinks):
@@ -203,13 +218,14 @@ class Struct(object):
                                if word_str in w]
                     if sum([lvec[k] for k in dep_idx]) >= self.max_links:
                         to_rm.append(i)
-            #Finally, remove links that aren't possible with the vocabulary
+            # Finally, remove links that aren't possible with the vocabulary
         return [link_vecs[k] for k in range(len(link_vecs)) if k not in to_rm]
 
     def _name_links(self):
+        print('Naming links...')
         links = []
-        non_empty = {k: self.lexicon[k] for k in self.lexicon
-                     if k not in 'EMPTY'}
+#        non_empty = {k: self.lexicon[k] for k in self.lexicon
+#                     if k not in 'EMPTY'}
         for pos_nr in range(self.max_sent_length):
             other_positions = [x for x in range(self.max_sent_length)
                                if x != pos_nr]
@@ -227,6 +243,7 @@ class Struct(object):
         'the_sg' and 'the_pl.'
         """
         assert self.lexicon is not None, 'Must initialize lexicon.'
+        print('Naming position dimensions...')
         per_position = []
 #        for word in self.lexicon:
         for word in self.phon_forms:
@@ -250,7 +267,7 @@ class Struct(object):
                 all_names.append(x)
         return all_names
 
-    def _gen_centers(self):
+    def gen_centers(self):
         """Will return a NumPy array with a center on each row.
 
         Because links are only care about sentence position and attch. site,
@@ -279,7 +296,6 @@ class Struct(object):
             elif seq_name[1] == 'EMPTY':
                 centers.append(curr_seq + link_vecs[0])
             else:
-#                configs_to_use = link_vecs.copy()
                 # Need to exclude attchs. to EMPTYs
                 try:
                     first_empty = seq_name.index('EMPTY')
@@ -287,7 +303,7 @@ class Struct(object):
                                range(first_empty, self.max_sent_length)]
                     # Indexing the dimensions that have links to EMPTYs
                     empty_idx = [i for i, ln in enumerate(link_names) for e in
-                           empties if e not in ln]
+                                 empties if e not in ln]
                 except ValueError:
                     empty_idx = []
                 to_rm = []
@@ -350,7 +366,7 @@ class Struct(object):
         assert len(vec0) == len(vec1), 'Feature vectors not of equal length'
         return 1 - (self.hamming_dist(vec0, vec1) / len(vec0))
 
-    def _calculate_local_harmonies(self):
+    def calculate_local_harmonies(self):
         """Cycle through the centers and use self.lexicon to look up features.
         """
         # Pos. approach: look at which links are active and where they connect
@@ -388,17 +404,131 @@ class Struct(object):
         self.local_harmonies = local_harmonies
         return
 
-    def _locate_attrs(self):
-        """Use Newton's method (?) to find actual locations of attractors
-        in the full harmony landscape.
+    def input_word(self, state_vec, word, pos):
+        """Inputs a new word at a particular position by overwriting the values
+        of the state vector at the relevant positions.
         """
-        return  # Array of actual attractor locations
+        assert (pos + 1) <= self.max_sent_length, \
+            'Can only add words up to max_sent_length'
+        # First, get the feature vector(s) from the lexicon
+        ambig_words = [w for w in self.lexicon if word in w]
+        # Then, average them in case the word is ambiguous
+        if len(ambig_words) != 1:
+            word_vec = np.array(self.lexicon[ambig_words[0]]['head'])
+        else:
+            word_vec = np.zeros(self.nfeatures)
+            for w in ambig_words:
+                word_vec += np.array(self.lexicon[w]['head'])
+            word_vec /= len(ambig_words)
+        # Finally, turn on the averaged features at the correct possition
+        phon = np.zeros(self.nphon_forms)
+        phon[self.idx_phon_dict[word]] = 1.0
+        whole_vec = np.concatenate([phon, word_vec])
+        updated_state = state_vec.copy()
+        start = pos*self.ndim_per_position
+        stop = start + self.nphon_forms + self.nfeatures
+        idx = slice(start, stop)
+        updated_state[idx] = whole_vec
+        return updated_state
+
+    def neg_harmony(self, x, centers, local_harmonies, gamma):
+        return -1 * calc_harmony(x, centers, local_harmonies, gamma)
+    
+    def jac_neg_harmony(self, x, centers, local_harmonies, gamma):
+        return -1 * iterate(x, centers, local_harmonies, gamma)
+
+    def locate_attrs(self):
+        """Finds actual locations of attractors in the full harmony landscape
+        using the Newton-CG algorithm on the negative of the harmony fn.
+        """
+        attrs = np.zeros(self.centers.shape)
+        for c in range(self.centers.shape[0]):
+#            print('Finding attractor for center #{}'.format(c))
+#            extremum = fmin(self.neg_harmony, self.centers[c],
+#                            args=(self.centers, self.local_harmonies,
+#                                  self.gamma))
+#            extremum = basinhopping(self.neg_harmony, self.centers[c],
+#                                    T=self.gamma, stepsize=0.1,
+#                                    minimizer_kwargs={'args':(self.centers,
+#                                                              self.local_harmonies,
+#                                                              self.gamma)})
+            extremum = minimize(self.neg_harmony, self.centers[c],
+                                args=(self.centers, self.local_harmonies,
+                                      self.gamma), method='Newton-CG',
+                                jac=self.jac_neg_harmony)
+            attrs[c] = extremum.x
+        unique_attrs = np.unique(np.round(attrs, 6), axis=0)
+        self.attrs = unique_attrs
+        print('Found {} unique attractors from {} centers'.format(
+                self.attrs.shape[0], self.centers.shape[0]))
+        return
+
+    def _zero_state_hist(self):
+        self.state_hist = np.zeros((self.max_time, self.ndim))
+
+    def single_run(self, seq=None):
+        """Run the model once until stopping criterion is met or
+        time runs out.
+        """
+        assert seq is not None, 'Must provide a sequence of words.'
+        self._zero_state_hist()
+        self.state_hist[0, ] = self.centers[0]  # initialize to all EMPTYs
+        self.energy = np.zeros(self.max_time)
+        # Input the first word
+        curr_pos = 0
+        self.state_hist[0, ] = self.input_word(self.state_hist[0, ],
+                       seq[curr_pos], curr_pos)
+        # Pre-generate the noise for speed
+        noise = (np.sqrt(2 * self.noise_mag * self.tau)
+                 * np.random.normal(0, 1, self.state_hist.shape))
+        t = 0
+        while t < self.max_time-1 and seq:
+            dont_stop = self.stopping_crit(self.state_hist[t], self.attrs,
+                                           self.tol)
+            do_stop = not dont_stop
+            if dont_stop:
+                self.state_hist[t+1,] = (self.state_hist[t,]
+                        + self.tau * iterate(self.state_hist[t,], self.centers,
+                                             self.local_harmonies, self.gamma)
+                        + noise[t,])
+                self.energy[t] = calc_harmony(self.state_hist[t,],
+                           self.centers, self.local_harmonies, self.gamma)
+                t += 1
+            elif do_stop:
+                if curr_pos >= self.max_sent_length-1:
+                    trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
+                    return trunc[-1]
+                    break
+                else:
+                    print('Inputing new word')
+                    curr_pos += 1
+                    self.state_hist[t+1,] = (self.input_word(
+                                             self.state_hist[t,],
+                                             seq[curr_pos], curr_pos))
+                    self.energy[t] = calc_harmony(self.state_hist[t,],
+                                                   self.centers,
+                                                   self.local_harmonies,
+                                                   self.gamma)
+                    t += 1
+        trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
+        return trunc[-1]
+
+
+    def plot_trace(self):
+        trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
+        plt.plot(trunc)
+#        plt.ylim(-0.01, 1.01)
+        plt.xlabel('Time')
+        plt.ylabel('Activation')
+        plt.show()
 
 
 if __name__ == '__main__':
     file = './test.yaml'
-    sent_len = 2
-    sys = Struct(lex_file=file, features=None, max_sent_length=sent_len)
+    sent_len = 3
+    sys = Struct(lex_file=file, features=None, max_sent_length=sent_len,
+                 missing_link_cost=0.0001, gamma=0.25,
+                 stopping_crit='euclid_stop')
 #    sys.lexicon
 #    print(sys.dim_names)
 #    print('Number of dimensions', sys.ndim)
@@ -406,10 +536,15 @@ if __name__ == '__main__':
 #    link_vecs = sys._prune_links()
 #    print('Number of link configurations: {}'.format(len(sys._prune_links())))
 #    print('Number of sequences: {}'.format(len(sys._make_seq_vecs())))
-    sys._gen_centers()
-    sys._calculate_local_harmonies()
-    sns.distplot(sys.local_harmonies, kde=False, rug=True)
-    idx = np.where(sys.local_harmonies > 0.8)
-    tmp = sys.centers[idx]
-    for c in tmp:
-        print(sys.which_nonzero(c))
+    sys.gen_centers()
+    sys.calculate_local_harmonies()
+#    sns.distplot(sys.local_harmonies, kde=False, rug=True)
+    sys.locate_attrs()
+#    idx = np.where(sys.local_harmonies > 0.8)
+#    tmp = sys.centers[idx]
+#    for c in tmp:
+#        print(sys.which_nonzero(c))
+    final = sys.single_run(['the', 'dog'])
+    sys.plot_trace()
+    plt.plot(sys.energy); plt.show()
+    print(sys.which_nonzero(np.round(final)))
