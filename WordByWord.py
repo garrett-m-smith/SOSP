@@ -47,7 +47,7 @@ import numpy as np
 # from numba import jit
 import matplotlib.pyplot as plt
 import seaborn as sns
-from dynamics import calc_harmony, iterate, euclid_stop, vel_stop
+from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop
 from scipy.optimize import minimize  # fmin, basinhopping
 
 
@@ -66,13 +66,15 @@ class Struct(object):
         self.gamma = gamma
         if stopping_crit == 'vel_stop':
             self.stopping_crit = vel_stop
+        elif stopping_crit == 'cheb_stop':
+            self.stopping_crit = cheb_stop
         else:
             self.stopping_crit = euclid_stop
 
         self.tau = 0.01  # Time step for discretized dynamics
-        self.max_time = 2000  # Max. number of time steps
+        self.max_time = 10000  # Max. number of time steps
         self.noise_mag = 0.001  # default
-        self.tol = 0.05  # Stopping tolerance on each dim.
+        self.tol = 0.1  # Stopping tolerance
 
         if features is None:
             self.features = ['Det', 'N', 'V', 'sg', 'pl']
@@ -359,6 +361,21 @@ class Struct(object):
         idx = list(np.where(center != 0)[0])
         return [self.dim_names[i] for i in idx]
 
+    def look_up_center(self, active):
+        """Returns the center (if it exists) that corresponds to the given
+        dimensions being active.
+        """
+        idx = [self.dim_names.index(dim) for dim in active]
+        test_vec = [0] * len(self.dim_names)
+        for i in idx:
+            test_vec[i] = 1
+        if test_vec in self.centers.tolist():
+            lidx = np.where((self.centers == test_vec).all(axis=1))
+            lharmony = self.local_harmonies[lidx]
+            return lharmony, test_vec
+        else:
+            return 'Active dimensions don\'t correspond to a center.'
+
     def hamming_dist(self, vec0, vec1):
         return sum(f0 != f1 for f0, f1 in zip(vec0, vec1))
 
@@ -413,27 +430,32 @@ class Struct(object):
         # First, get the feature vector(s) from the lexicon
         ambig_words = [w for w in self.lexicon if word in w]
         # Then, average them in case the word is ambiguous
-        if len(ambig_words) != 1:
-            word_vec = np.array(self.lexicon[ambig_words[0]]['head'])
-        else:
-            word_vec = np.zeros(self.nfeatures)
-            for w in ambig_words:
-                word_vec += np.array(self.lexicon[w]['head'])
-            word_vec /= len(ambig_words)
+        word_vec = np.zeros(self.nfeatures)
+        for w in ambig_words:
+            word_vec += np.array(self.lexicon[w]['head'])
+        word_vec /= len(ambig_words)
+        # Getting dep. features
+        dep_feats = np.zeros(self.ndep * self.nfeatures)
+        for i, w in enumerate(ambig_words):
+            if self.lexicon[w]['dependents'] is not None:
+                idx = slice(i*self.nfeatures, i*self.nfeatures+self.nfeatures)
+                for d in self.lexicon[w]['dependents']:
+                    dep_feats[idx] = np.array(self.lexicon[w]['dependents'][d])
         # Finally, turn on the averaged features at the correct possition
         phon = np.zeros(self.nphon_forms)
         phon[self.idx_phon_dict[word]] = 1.0
-        whole_vec = np.concatenate([phon, word_vec])
+        whole_vec = np.concatenate([phon, word_vec, dep_feats])
         updated_state = state_vec.copy()
         start = pos*self.ndim_per_position
-        stop = start + self.nphon_forms + self.nfeatures
+        stop = (start + self.nphon_forms + self.nfeatures
+                + self.ndep*self.nfeatures)
         idx = slice(start, stop)
         updated_state[idx] = whole_vec
         return updated_state
 
     def neg_harmony(self, x, centers, local_harmonies, gamma):
         return -1 * calc_harmony(x, centers, local_harmonies, gamma)
-    
+
     def jac_neg_harmony(self, x, centers, local_harmonies, gamma):
         return -1 * iterate(x, centers, local_harmonies, gamma)
 
@@ -443,15 +465,6 @@ class Struct(object):
         """
         attrs = np.zeros(self.centers.shape)
         for c in range(self.centers.shape[0]):
-#            print('Finding attractor for center #{}'.format(c))
-#            extremum = fmin(self.neg_harmony, self.centers[c],
-#                            args=(self.centers, self.local_harmonies,
-#                                  self.gamma))
-#            extremum = basinhopping(self.neg_harmony, self.centers[c],
-#                                    T=self.gamma, stepsize=0.1,
-#                                    minimizer_kwargs={'args':(self.centers,
-#                                                              self.local_harmonies,
-#                                                              self.gamma)})
             extremum = minimize(self.neg_harmony, self.centers[c],
                                 args=(self.centers, self.local_harmonies,
                                       self.gamma), method='Newton-CG',
@@ -472,79 +485,88 @@ class Struct(object):
         """
         assert seq is not None, 'Must provide a sequence of words.'
         self._zero_state_hist()
-        self.state_hist[0, ] = self.centers[0]  # initialize to all EMPTYs
-        self.energy = np.zeros(self.max_time)
+        self.harmony = np.zeros(self.max_time)
+        data = []
         # Input the first word
         curr_pos = 0
         self.state_hist[0, ] = self.input_word(self.state_hist[0, ],
-                       seq[curr_pos], curr_pos)
+                                               seq[curr_pos], curr_pos)
         # Pre-generate the noise for speed
         noise = (np.sqrt(2 * self.noise_mag * self.tau)
                  * np.random.normal(0, 1, self.state_hist.shape))
+#        noise = np.zeros(self.state_hist.shape)
         t = 0
-        while t < self.max_time-1 and seq:
-            dont_stop = self.stopping_crit(self.state_hist[t], self.attrs,
+        word_t = 0  # for keeping track of max amt. of time ea. word can get
+        data.append([curr_pos, seq[curr_pos], t])
+        while t < self.max_time-1:
+            not_close = self.stopping_crit(self.state_hist[t], self.attrs,
                                            self.tol)
-            do_stop = not dont_stop
-            if dont_stop:
-                self.state_hist[t+1,] = (self.state_hist[t,]
-                        + self.tau * iterate(self.state_hist[t,], self.centers,
-                                             self.local_harmonies, self.gamma)
-                        + noise[t,])
-                self.energy[t] = calc_harmony(self.state_hist[t,],
-                           self.centers, self.local_harmonies, self.gamma)
+            if not_close and word_t < 1000:# curr_pos*(t)+100:
+                self.state_hist[t+1, ] = (self.state_hist[t, ]
+                                          + self.tau *
+                                          iterate(self.state_hist[t, ],
+                                                  self.centers,
+                                                  self.local_harmonies,
+                                                  self.gamma)
+                                          + noise[t, ])
+                self.harmony[t] = calc_harmony(self.state_hist[t, ],
+                                               self.centers,
+                                               self.local_harmonies,
+                                               self.gamma)
                 t += 1
-            elif do_stop:
-                if curr_pos >= self.max_sent_length-1:
-                    trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
-                    return trunc[-1]
-                    break
-                else:
+                word_t += 1
+            else:
+                try:
                     print('Inputing new word')
                     curr_pos += 1
-                    self.state_hist[t+1,] = (self.input_word(
-                                             self.state_hist[t,],
-                                             seq[curr_pos], curr_pos))
-                    self.energy[t] = calc_harmony(self.state_hist[t,],
+                    self.state_hist[t+1, ] = (self.input_word(
+                                              self.state_hist[t, ],
+                                              seq[curr_pos], curr_pos))
+                    self.harmony[t] = calc_harmony(self.state_hist[t, ],
                                                    self.centers,
                                                    self.local_harmonies,
                                                    self.gamma)
                     t += 1
-        trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
-        return trunc[-1]
-
+                    word_t = 0
+                    data.append([curr_pos, seq[curr_pos], t])
+                except:
+                    trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
+                    return trunc[-1], data
+        trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
+        return trunc[-1], data
 
     def plot_trace(self):
-        trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
+        trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
         plt.plot(trunc)
 #        plt.ylim(-0.01, 1.01)
         plt.xlabel('Time')
         plt.ylabel('Activation')
         plt.show()
 
+    def plot_harmony(self):
+        trunc = self.harmony[self.harmony != 0]
+        plt.plot(trunc)
+#        plt.ylim(-0.01, 1.01)
+        plt.xlabel('Time')
+        plt.ylabel('Harmony')
+        plt.show()
+
 
 if __name__ == '__main__':
     file = './test.yaml'
     sent_len = 3
+    # Missing link cost seems to need to be not too small, otherwise it can't
+    # get to the attractors with EMPTYs for not-yet-seen words
     sys = Struct(lex_file=file, features=None, max_sent_length=sent_len,
-                 missing_link_cost=0.0001, gamma=0.25,
-                 stopping_crit='euclid_stop')
-#    sys.lexicon
-#    print(sys.dim_names)
-#    print('Number of dimensions', sys.ndim)
-    # print(*sys.dim_names, sep='\n')
-#    link_vecs = sys._prune_links()
-#    print('Number of link configurations: {}'.format(len(sys._prune_links())))
-#    print('Number of sequences: {}'.format(len(sys._make_seq_vecs())))
+                 missing_link_cost=0.5, gamma=0.15,
+                 stopping_crit='cheb_stop')
     sys.gen_centers()
     sys.calculate_local_harmonies()
-#    sns.distplot(sys.local_harmonies, kde=False, rug=True)
     sys.locate_attrs()
-#    idx = np.where(sys.local_harmonies > 0.8)
-#    tmp = sys.centers[idx]
-#    for c in tmp:
-#        print(sys.which_nonzero(c))
-    final = sys.single_run(['the', 'dog'])
+    final, data = sys.single_run(['the', 'dog', 'eats'])
+    sns.distplot(sys.local_harmonies, kde=False, rug=True)
+    plt.show()
     sys.plot_trace()
-    plt.plot(sys.energy); plt.show()
+    sys.plot_harmony()
     print(sys.which_nonzero(np.round(final)))
+    print(data)

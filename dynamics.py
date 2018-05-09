@@ -16,8 +16,9 @@ def _phi(x, center, gamma):
     """Radial basis function \phi. Returns a scalar.
     """
     assert x.shape == center.shape, "Shape mismatch in phi fn."
-    l2norm = np.linalg.norm(x - center)
-    return np.exp(-l2norm**2 / gamma)
+    # Using Einstein summation notation for speed. Multiplies repeated indices,
+    # sums if across an index if it doesn't appear on the RHS of ->
+    return np.exp(-np.einsum('i,i->', x - center, x - center))
 
 
 def calc_harmony(x, centers, local_harmonies, gamma):
@@ -37,9 +38,8 @@ def iterate(x, centers, harmonies, gamma):
     dx = np.zeros(x.shape)
     mult = -2./gamma
     for c in range(centers.shape[0]):
-        dx += (mult * harmonies[c]
-               * (x - centers[c]) * _phi(x, centers[c], gamma))
-    return dx
+        dx += (harmonies[c] * (x - centers[c]) * _phi(x, centers[c], gamma))
+    return mult * dx
 
 
 def euclid_stop(x, attrs, tol):
@@ -57,6 +57,19 @@ def euclid_stop(x, attrs, tol):
 def vel_stop(x, tol):
     vel = np.sqrt(x @ x)
     if vel < tol:
+        return False
+    else:
+        return True
+
+
+def cheb_stop(x, attrs, tol):
+    """Returns True if the maximum distance of any dimension from the attr. is
+    greater than tol.
+    """
+    if len(x.shape) == 1:
+        x = x.reshape(1, -1)
+    dists = cdist(attrs, x, metric='chebyshev')
+    if np.any(dists < tol):
         return False
     else:
         return True

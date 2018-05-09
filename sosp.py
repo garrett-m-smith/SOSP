@@ -105,7 +105,7 @@ class SimpleModel(object):
                 print('[{}] '.format(run), end='')
             self._zero_state_hist()
             self.single_run(init_cond)
-            trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
+            trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
             for center in range(self.centers.shape[0]):
                 if np.all(np.round(trunc[-1,]) == self.centers[center,]):
                     data_list.append([center, trunc.shape[0]])
@@ -132,7 +132,7 @@ class SimpleModel(object):
         return pd.concat(all_data)
 
     def plot_trace(self):
-        trunc = self.state_hist[~np.any(self.state_hist == 0, axis=1)]
+        trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
         plt.plot(trunc)
         plt.ylim(-0.01, 1.01)
         plt.xlabel('Time')
