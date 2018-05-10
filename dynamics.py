@@ -10,17 +10,21 @@ Defining the equations for the dynamics
 
 import numpy as np
 from scipy.spatial.distance import cdist
+from numba import jit
 
 
+@jit(nopython=True)
 def _phi(x, center, gamma):
     """Radial basis function \phi. Returns a scalar.
     """
     assert x.shape == center.shape, "Shape mismatch in phi fn."
     # Using Einstein summation notation for speed. Multiplies repeated indices,
     # sums if across an index if it doesn't appear on the RHS of ->
-    return np.exp(-np.einsum('i,i->', x - center, x - center))
+#    return np.exp(-np.einsum('i,i->', x - center, x - center) / gamma)
+    return np.exp(-np.dot(x - center, x - center) / gamma)
 
 
+@jit(nopython=True)
 def calc_harmony(x, centers, local_harmonies, gamma):
     """Calculate the global harmony at a given position.
     Assumes centers is an array with the coordinates of one center on each
@@ -32,6 +36,7 @@ def calc_harmony(x, centers, local_harmonies, gamma):
     return harmony
 
 
+@jit(nopython=True)
 def iterate(x, centers, harmonies, gamma):
     """Iterate the discretized dynamics.
     """

@@ -4,27 +4,34 @@ Created on Mon Apr 16 16:26:04 2018
 
 @author: garrettsmith
 
-Word-by-word SOSP sentence processing tools
+Word-by-word SOSP sentence processing
 
-The lexicon is basically a dictionary where the keys are attachment sites
-(head and dependent) and the values are NumPy arrays for the features.
+The lexicon is a dictionary where the keys are attachment sites (head and
+dependent) and the values are lists the features.
 
-A treelet is a vector of head identities (lexical forms), head features, and
-dependent features.
+A treelet is a vector of head identities (phon. forms), head features, and
+a fixed number of dependent features for each word.
 
-CHANGE (04/20): Instead of lexical-item-specific features at each position,
-I'll use one-hot word-identity dimensions at each position and a single bank
-of features for each position. This should greatly reduce the dimensionality
-of the system. ALSO: To allow for strings less than max_sent_length, added
-EMPTY lexical items at each position.
+DESIGN CHOICE: To allow for strings shorter than max_sent_length, added EMPTY
+lexical item as placeholder. Short but fully linked parses, e.g., the->dog
+EMPTY, are fully harmonious.
 
-UPDATE (05/03): Now doing the same thing for the dependent features: for each
-dependent, there will be a single set of features instead of, e.g, dog-specific
-dependent features.
+DESIGN CHOICE: Ambiguous words are disambiguated in the lexicon file, but if
+they share a phonological form, only a single phonological form is used for
+making the dimension names. This is also how optional attachments can be
+handled (although I haven't tried that yet).
 
-UPDATE (05/04): Ambiguous words are disambiguated in the lexicon file, but if
-they share a phonological form, only a single lexeme is used for making the
-dimension names.
+DESIGN CHOICE: eliminating link patterns like L_W0_W1_d0 L_W1_W0_d0, i.e.,
+"circular" link patterns.
+
+DESIGN CHOICE: init. activ. patterns of ambiguous words are the average of
+their ambiguous senses.
+
+DESIGN CHOICE: a seq. of all EMPTYs is only penalized for its missing links
+
+DESIGN CHOICE: When a new word is input, predictions/hallucinations about not-
+yet-seen words are erased so that the system it always deflected away from an
+attr. instead of immediately being at a, w0 w1 EMPTY (no link) low-harm. attr.
 
 POSSIBLITY FOR REDUCING NUMBER OF DIMENSIONS: Have a full lexicon (like now),
 but if only want to consider particular sequences, add a method for removing
@@ -33,12 +40,6 @@ the expected direction of dependents would reduce the number of dim. Finally,
 after calculating harmonies, could eliminate very low-harmony centers.
 
 For now at least, don't use root/apex node
-
-Init state w/ all EMPTYs should have harmony of ~0.25 so stable, but not too...
-
-How to handle optional dependents?
-
-Later, add visualization by plotting overlap between current state and centers
 """
 
 import yaml
@@ -73,8 +74,8 @@ class Struct(object):
 
         self.tau = 0.01  # Time step for discretized dynamics
         self.max_time = 10000  # Max. number of time steps
-        self.noise_mag = 0.001  # default
-        self.tol = 0.1  # Stopping tolerance
+        self.noise_mag = 0.0001  # default
+        self.tol = 0.05  # Stopping tolerance
 
         if features is None:
             self.features = ['Det', 'N', 'V', 'sg', 'pl']
@@ -166,7 +167,6 @@ class Struct(object):
         vectors concatenated together.
         """
         word_vec = self._make_word_vecs()
-#        print(word_vec)
         seq_names = self._name_seqs()
         seq_vecs = []
         for seq in seq_names:
@@ -188,8 +188,6 @@ class Struct(object):
         # many times as needed, i.e., for the length of link_names
         too_many_links = product([0, 1], repeat=len(link_names))
         # Gives only the link activation vectors with fewer than nlinks
-#        pruned = list(filter(lambda y: sum(y) <= nlinks, too_many_links))
-#        pruned = filter(lambda y: sum(y) <= nlinks, too_many_links)
         pruned = [x for x in too_many_links if sum(x) <= nlinks]
 #        links = gen_nlinks_vectors(link_names, self.nlinks)
         return list(map(list, pruned))
@@ -220,14 +218,23 @@ class Struct(object):
                                if word_str in w]
                     if sum([lvec[k] for k in dep_idx]) >= self.max_links:
                         to_rm.append(i)
+            # Now rm links that form cycles
+            for wn in range(self.max_sent_length-1):
+                w0 = wn
+                w1 = wn + 1
+                for d in ['d' + str(j) for j in range(self.ndep)]:
+                    s0 = '_'.join(['L', 'W' + str(w0), 'W' + str(w1), d])
+                    idx0 = link_names.index(s0)
+                    s1 = '_'.join(['L', 'W' + str(w1), 'W' + str(w0), d])
+                    idx1 = link_names.index(s1)
+                    if lvec[idx0] == 1 and lvec[idx1] == 1:
+                        to_rm.append(i)
             # Finally, remove links that aren't possible with the vocabulary
         return [link_vecs[k] for k in range(len(link_vecs)) if k not in to_rm]
 
     def _name_links(self):
         print('Naming links...')
         links = []
-#        non_empty = {k: self.lexicon[k] for k in self.lexicon
-#                     if k not in 'EMPTY'}
         for pos_nr in range(self.max_sent_length):
             other_positions = [x for x in range(self.max_sent_length)
                                if x != pos_nr]
@@ -247,7 +254,6 @@ class Struct(object):
         assert self.lexicon is not None, 'Must initialize lexicon.'
         print('Naming position dimensions...')
         per_position = []
-#        for word in self.lexicon:
         for word in self.phon_forms:
             per_position.append(word)
         for feat in self.features:
@@ -255,11 +261,6 @@ class Struct(object):
         for dep in range(self.ndep):
             for feat in self.features:
                 per_position.append('d' + str(dep) + '_' + feat)
-#        for word in self.lexicon:
-#            if self.lexicon[word]['dependents'] is not None:
-#                for dep in self.lexicon[word]['dependents']:
-#                    for feat in self.features:
-#                        per_position.append('_'.join([word, dep, feat]))
         self.ndim_per_position = len(per_position)
 
         all_names = []
@@ -386,38 +387,41 @@ class Struct(object):
     def calculate_local_harmonies(self):
         """Cycle through the centers and use self.lexicon to look up features.
         """
-        # Pos. approach: look at which links are active and where they connect
-        # to. From there, look up features in self.lexicon and calculate
-        # harmony in np.array
         local_harmonies = np.ones(self.centers.shape[0])
         for c, center in enumerate(self.centers):
+            # Find which dims are active
             nonzero = self.which_nonzero(self.centers[c])
+            # Getting active links from there
             active_links = [nonzero[i] for i, dim in enumerate(nonzero)
                             if 'L_' in dim]
-            if not active_links:  # if list is empty
-                local_harmonies[c] = self.missing_link_cost**self.max_links
-            else:
-                for link in active_links:
-                    # get feat vecs
-                    _, dep_word_nr, head_word_nr, head_dep = link.split('_')
-                    # Just the position number
-                    dep_nr = int(dep_word_nr[1])
-                    dep_slice = slice(dep_nr * self.ndim_per_position
-                                      + self.nphon_forms,
-                                      dep_nr * self.ndim_per_position
-                                      + self.nphon_forms + self.nfeatures)
-                    v0 = center[dep_slice]
-                    head_str = '_'.join([head_word_nr, head_dep])
-                    tmp = [i for i, x in enumerate(self.pos_names) if head_str
-                           in x]
-                    head_slice = slice(tmp[0], tmp[0] + self.nfeatures)
-                    v1 = center[head_slice]
-                    local_harmonies[c] *= self.feat_match(v0, v1)
-                if len(active_links) < self.max_links:
-                    # Penalizing for missing links
-                    local_harmonies[c] *= (self.missing_link_cost**
-                                           (self.max_links -
-                                            len(active_links)))
+            nempties = len([dim for dim in nonzero if 'EMPTY' in dim])
+            if nempties == self.max_sent_length:
+                # This is a choice:
+                local_harmonies[c] *= self.missing_link_cost**self.max_links
+                pass
+            for link in active_links:
+                # get locations of feat vecs
+                _, dep_word_nr, head_word_nr, head_dep = link.split('_')
+                # Just the position number
+                dep_nr = int(dep_word_nr[1])
+                dep_slice = slice(dep_nr * self.ndim_per_position
+                                  + self.nphon_forms,
+                                  dep_nr * self.ndim_per_position
+                                  + self.nphon_forms + self.nfeatures)
+                # Head features of the dependent treelet
+                v0 = center[dep_slice]
+                # Getting features of dependent attch. site on the head
+                head_str = '_'.join([head_word_nr, head_dep])
+                tmp = [i for i, x in enumerate(self.pos_names) if head_str
+                       in x]
+                head_slice = slice(tmp[0], tmp[0] + self.nfeatures)
+                v1 = center[head_slice]
+                local_harmonies[c] *= self.feat_match(v0, v1)
+            # Penalizing missing links
+            if len(active_links) < self.max_links - nempties:
+                local_harmonies[c] *= (self.missing_link_cost **
+                                       (self.max_links -
+                                        len(active_links)))
         self.local_harmonies = local_harmonies
         return
 
@@ -451,6 +455,8 @@ class Struct(object):
                 + self.ndep*self.nfeatures)
         idx = slice(start, stop)
         updated_state[idx] = whole_vec
+#        if pos < self.max_sent_length-1:
+#            updated_state[slice(stop, stop+self.ndim_per_position)] = 0.
         return updated_state
 
     def neg_harmony(self, x, centers, local_harmonies, gamma):
@@ -501,7 +507,7 @@ class Struct(object):
         while t < self.max_time-1:
             not_close = self.stopping_crit(self.state_hist[t], self.attrs,
                                            self.tol)
-            if not_close and word_t < 1000:# curr_pos*(t)+100:
+            if not_close:  # and word_t < 1000:
                 self.state_hist[t+1, ] = (self.state_hist[t, ]
                                           + self.tau *
                                           iterate(self.state_hist[t, ],
@@ -530,7 +536,8 @@ class Struct(object):
                     word_t = 0
                     data.append([curr_pos, seq[curr_pos], t])
                 except:
-                    trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
+                    trunc = self.state_hist[~np.all(self.state_hist == 0,
+                                                    axis=1)]
                     return trunc[-1], data
         trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
         return trunc[-1], data
@@ -551,19 +558,31 @@ class Struct(object):
         plt.ylabel('Harmony')
         plt.show()
 
+    def plot_overlap(self):
+        # Not very useful right now...
+        trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
+        plt.plot(trunc.dot(self.centers.T))
+        plt.xlabel('Time')
+        plt.ylabel('Overlap between state and centers')
+        plt.show()
+
 
 if __name__ == '__main__':
     file = './test.yaml'
-    sent_len = 3
+    sent_len = 2
     # Missing link cost seems to need to be not too small, otherwise it can't
     # get to the attractors with EMPTYs for not-yet-seen words
     sys = Struct(lex_file=file, features=None, max_sent_length=sent_len,
-                 missing_link_cost=0.5, gamma=0.15,
+                 missing_link_cost=0.1, gamma=0.35,
                  stopping_crit='cheb_stop')
     sys.gen_centers()
     sys.calculate_local_harmonies()
     sys.locate_attrs()
-    final, data = sys.single_run(['the', 'dog', 'eats'])
+#    final, data = sys.single_run(['an', 'cat'])
+    final, data = sys.single_run(['the', 'cat'])
+#    final, data = sys.single_run(['dog', 'eats'])
+#    final, data = sys.single_run(['the', 'dog', 'eats'])
+#    final, data = sys.single_run(['dog', 'dog', 'eats'])
     sns.distplot(sys.local_harmonies, kde=False, rug=True)
     plt.show()
     sys.plot_trace()

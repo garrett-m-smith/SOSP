@@ -15,21 +15,32 @@ the_pl:
     head: [1, 0, 0, 0, 1]
     dependents: !!null
 
+an:
+    phon_form: an
+    head: [1, 0, 0, 1, 0]
+    dependents: !!null
+
 dog:
     phon_form: dog
     head: [0, 1, 0, 1, 0]
     dependents:
         Det: [1, 0, 0, 1, 0]
 
-eats_DO_sg:
+cat:
+    phon_form: cat
+    head: [0, 1, 0, 1, 0]
+    dependents:
+        Det: [1, 0, 0, 1, 0]
+
+eats:
     phon_form: eats
     head: [0, 0, 1, 1, 0]
     dependents:
         Subj: [0, 1, 0, 1, 0]
 #        DO: [0, 1, 0, 1, 0]
-eats_DO_pl:
-    phon_form: eats
-    head: [0, 0, 1, 1, 0]
-    dependents:
-        Subj: [0, 1, 0, 1, 0]
+#eats_Subj_pl:
+#    phon_form: eats
+#    head: [0, 0, 1, 1, 0]
+#    dependents:
+#        Subj: [0, 1, 0, 0, 1]
 #        DO: [0, 1, 0, 0, 1]
