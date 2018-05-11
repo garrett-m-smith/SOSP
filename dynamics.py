@@ -37,6 +37,20 @@ def calc_harmony(x, centers, local_harmonies, gamma):
 
 
 @jit(nopython=True)
+def calc_harmony_bc(x, centers, local_harmonies, gamma, alpha):
+    """Calculate the global harmony at a given position with baseline
+    constraint. Assumes centers is an array with the coordinates of one center
+    on each row.
+    """
+    harmony = 0
+    for c in range(centers.shape[0]):
+        harmony += local_harmonies[c] * _phi(x, centers[c], gamma)
+        # Baseline constraint: pulling state towards the middle
+    harmony -= alpha/2 * np.dot(x-0.5, x-0.5)
+    return harmony
+
+
+@jit(nopython=True)
 def iterate(x, centers, harmonies, gamma):
     """Iterate the discretized dynamics.
     """
@@ -45,6 +59,18 @@ def iterate(x, centers, harmonies, gamma):
     for c in range(centers.shape[0]):
         dx += (harmonies[c] * (x - centers[c]) * _phi(x, centers[c], gamma))
     return mult * dx
+
+
+@jit(nopython=True)
+def iterate_bc(x, centers, harmonies, gamma, alpha):
+    """Iterate the discretized dynamics.
+    """
+    dx = np.zeros(x.shape)
+    mult = -2./gamma
+    for c in range(centers.shape[0]):
+        dx += (harmonies[c] * (x - centers[c]) * _phi(x, centers[c], gamma))
+    dx *= mult
+    return dx - alpha * (x - 0.5)
 
 
 def euclid_stop(x, attrs, tol):

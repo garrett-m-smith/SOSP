@@ -46,16 +46,17 @@ import yaml
 from itertools import product
 import numpy as np
 # from numba import jit
+from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import seaborn as sns
-from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop
-from scipy.optimize import minimize  # fmin, basinhopping
+from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop#,\
+#    iterate_bc, calc_harmony_bc
 
 
 class Struct(object):
     def __init__(self, lex_file=None, features=None, max_sent_length=10,
                  missing_link_cost=0.01, gamma=0.25,
-                 stopping_crit='euclid_stop'):
+                 stopping_crit='euclid_stop', corpus=None):
         self.max_sent_length = max_sent_length
         self.ndim_per_position = 0
         # Maximum number of possible dependents; change to be fn. that calc.s
@@ -94,6 +95,7 @@ class Struct(object):
             self.nphon_forms = len(self.phon_forms)
             self.pos_names = self._name_pos_dims()
             self.link_names = self._name_links()
+            self.nlinks = len(self.link_names)
             self.dim_names = self.pos_names + self.link_names
             self.ndim = len(self.dim_names)
             self.idx_words = {j: i for i, j in enumerate(self.lexicon.keys())}
@@ -109,6 +111,24 @@ class Struct(object):
             self.nwords = 0
             self.dim_names = None
             self.ndim = None
+        # Working with a corpus
+        if corpus is not None:
+            disamb = corpus.copy()
+            for seq in corpus:
+                # Disambiguating words
+                for word_nr, word in enumerate(seq):
+                    ambig_forms = [w for w in self.lexicon if word in w]
+                    if len(ambig_forms) > 1:
+                        for amb in ambig_forms:
+                            rep = [w if w is not word else amb for w in seq]
+                            disamb.append(rep)
+                        del disamb[corpus.index(seq)]
+            # Also need to add partial subsequences from seqs in corpus
+            full_corp = disamb.copy()
+            for seq in disamb:
+                for i in range(len(seq)-1):
+                    full_corp.append(seq[:i+1] + ['EMPTY']*(len(seq)-i-1))
+            self.seq_names = full_corp
 
     def _import_lexicon(self, file):
         with open(file, 'r') as stream:
@@ -146,20 +166,23 @@ class Struct(object):
         """
         # One approach: for each possible sequence of words, find all allowed
         # feature/link combinations.
-        non_empty = {k: self.lexicon[k] for k in self.lexicon
-                     if k not in 'EMPTY'}
-        # For storing all possible sequences of words
-        word_seqs = []
-        # Manually adding the empty sequence
-        word_seqs.append(['EMPTY'] * self.max_sent_length)
-        for i in range(self.max_sent_length):
-            pr = product(non_empty, repeat=i+1)
-            word_seqs.extend([list(x) for x in pr])
-        for i in range(len(word_seqs)):
-            curr_len = len(word_seqs[i])
-            if curr_len < self.max_sent_length:
-                word_seqs[i].extend(['EMPTY'] * (self.max_sent_length
-                                                 - curr_len))
+        if self.seq_names:
+            word_seqs = self.seq_names
+        else:
+            non_empty = {k: self.lexicon[k] for k in self.lexicon
+                         if k not in 'EMPTY'}
+            # For storing all possible sequences of words
+            word_seqs = []
+            # Manually adding the empty sequence
+            word_seqs.append(['EMPTY'] * self.max_sent_length)
+            for i in range(self.max_sent_length):
+                pr = product(non_empty, repeat=i+1)
+                word_seqs.extend([list(x) for x in pr])
+            for i in range(len(word_seqs)):
+                curr_len = len(word_seqs[i])
+                if curr_len < self.max_sent_length:
+                    word_seqs[i].extend(['EMPTY'] * (self.max_sent_length
+                                                     - curr_len))
         return word_seqs
 
     def _make_seq_vecs(self):
@@ -305,8 +328,10 @@ class Struct(object):
                     empties = ['W' + str(i) for i in
                                range(first_empty, self.max_sent_length)]
                     # Indexing the dimensions that have links to EMPTYs
+#                    empty_idx = [i for i, ln in enumerate(link_names) for e in
+#                                 empties if e not in ln]
                     empty_idx = [i for i, ln in enumerate(link_names) for e in
-                                 empties if e not in ln]
+                                 empties if e in ln]
                 except ValueError:
                     empty_idx = []
                 to_rm = []
@@ -448,11 +473,19 @@ class Struct(object):
         # Finally, turn on the averaged features at the correct possition
         phon = np.zeros(self.nphon_forms)
         phon[self.idx_phon_dict[word]] = 1.0
-        whole_vec = np.concatenate([phon, word_vec, dep_feats])
+        whole_vec = np.zeros(self.ndim_per_position * (self.max_sent_length
+                                                       - pos))
+#        whole_vec = np.concatenate([phon, word_vec, dep_feats])
+        whole_vec[:self.nphon_forms] = phon
+        whole_vec[self.nphon_forms:self.nphon_forms+self.nfeatures] = word_vec
+        whole_vec[self.nphon_forms+self.nfeatures:
+                  self.nphon_forms+self.nfeatures+self.ndep*self.nfeatures] \
+            = dep_feats
         updated_state = state_vec.copy()
         start = pos*self.ndim_per_position
-        stop = (start + self.nphon_forms + self.nfeatures
-                + self.ndep*self.nfeatures)
+#        stop = (start + self.nphon_forms + self.nfeatures
+#                + self.ndep*self.nfeatures)
+        stop = self.ndim - self.nlinks
         idx = slice(start, stop)
         updated_state[idx] = whole_vec
 #        if pos < self.max_sent_length-1:
@@ -503,11 +536,12 @@ class Struct(object):
 #        noise = np.zeros(self.state_hist.shape)
         t = 0
         word_t = 0  # for keeping track of max amt. of time ea. word can get
+#        alpha = 0.001  # parameter for using the baseline constraint dyn.
         data.append([curr_pos, seq[curr_pos], t])
         while t < self.max_time-1:
             not_close = self.stopping_crit(self.state_hist[t], self.attrs,
                                            self.tol)
-            if not_close:  # and word_t < 1000:
+            if not_close:  # and word_t < 500:
                 self.state_hist[t+1, ] = (self.state_hist[t, ]
                                           + self.tau *
                                           iterate(self.state_hist[t, ],
@@ -569,19 +603,20 @@ class Struct(object):
 
 if __name__ == '__main__':
     file = './test.yaml'
-    sent_len = 2
+    sent_len = 3
+    corp = [['the', 'dog', 'eats'], ['an', 'cat', 'eats']]
     # Missing link cost seems to need to be not too small, otherwise it can't
     # get to the attractors with EMPTYs for not-yet-seen words
     sys = Struct(lex_file=file, features=None, max_sent_length=sent_len,
-                 missing_link_cost=0.1, gamma=0.35,
-                 stopping_crit='cheb_stop')
+                 missing_link_cost=0.1, gamma=0.45,
+                 stopping_crit='cheb_stop', corpus=corp)
     sys.gen_centers()
     sys.calculate_local_harmonies()
     sys.locate_attrs()
 #    final, data = sys.single_run(['an', 'cat'])
-    final, data = sys.single_run(['the', 'cat'])
+#    final, data = sys.single_run(['the', 'cat'])
 #    final, data = sys.single_run(['dog', 'eats'])
-#    final, data = sys.single_run(['the', 'dog', 'eats'])
+    final, data = sys.single_run(['the', 'dog', 'eats'])
 #    final, data = sys.single_run(['dog', 'dog', 'eats'])
     sns.distplot(sys.local_harmonies, kde=False, rug=True)
     plt.show()
