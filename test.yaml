@@ -38,9 +38,17 @@ eats:
     dependents:
         Subj: [0, 1, 0, 1, 0]
 #        DO: [0, 1, 0, 1, 0]
-#eats_Subj_pl:
-#    phon_form: eats
+
+sees:
+    phon_form: sees
+    head: [0, 0, 1, 1, 0]
+    dependents:
+        Subj: [0, 1, 0, 1, 0]
+        DO: [0, 1, 0, 1, 0]
+
+#sees_DO_pl:
+#    phon_form: sees
 #    head: [0, 0, 1, 1, 0]
 #    dependents:
-#        Subj: [0, 1, 0, 0, 1]
+#        Subj: [0, 1, 0, 1, 0]
 #        DO: [0, 1, 0, 0, 1]
