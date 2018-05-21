@@ -85,8 +85,9 @@ def euclid_stop(x, attrs, tol):
         return True
 
 
-def vel_stop(x, tol):
-    vel = np.sqrt(x @ x)
+def vel_stop(x, centers, tol):
+#    vel = np.sqrt(x @ x)
+    vel = np.linalg.norm(x)
     if vel < tol:
         return False
     else:

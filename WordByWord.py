@@ -51,6 +51,7 @@ from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import seaborn as sns
 from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop
+import pandas as pd
 
 
 def gen_nlinks_vectors(nlink_dims, maxlinks):
@@ -553,7 +554,6 @@ class Struct(object):
             else:
                 data.append([curr_pos, seq[curr_pos], word_t])
                 try:
-                    print('Inputting new word')
                     curr_pos += 1
                     self.state_hist[t+1, ] = (self.input_word(
                                               self.state_hist[t, ],
@@ -562,7 +562,6 @@ class Struct(object):
                                                    self.centers,
                                                    self.local_harmonies,
                                                    self.gamma)
-#                    data.append([curr_pos, seq[curr_pos], word_t])
                     t += 1
                     word_t = 0
                 except:
@@ -572,11 +571,31 @@ class Struct(object):
         trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
         return trunc[-1], data
 
+    def many_runs(self, n_runs=100, seq=None):
+        """Do repeated Monte Carlo runs. Returns a Pandas data frame with the
+        center number and settling time.
+        """
+        print('Run number:')
+        data_list = []
+        for run in range(n_runs):
+            if run % (n_runs // 10) == 0:
+                print('[{}] '.format(run), end='')
+            final_st, _ = self.single_run(seq)
+            final_rounded = np.rint(final_st)
+            final_rounded += 0.  # getting rid of negative zeros from rounding
+            t = self.state_hist[~np.all(self.state_hist == 0, axis=1)].shape[0]
+            for center in range(self.centers.shape[0]):
+                if np.all(final_rounded == self.centers[center,]):
+                    data_list.append([center, t])
+        return pd.concat([pd.DataFrame([i], columns=('CenterNr', 'Time',))
+                          for i in data_list])
+
     def plot_trace(self):
         trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
         plt.plot(trunc)
         plt.xlabel('Time')
         plt.ylabel('Activation')
+        plt.title('Evolution of state vector')
         plt.show()
 
     def plot_harmony(self):
@@ -584,13 +603,25 @@ class Struct(object):
         plt.plot(trunc)
         plt.xlabel('Time')
         plt.ylabel('Harmony')
+        plt.title('Harmony over time')
+        plt.show()
+
+    def plot_links(self):
+        trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1),
+                                -self.nlinks:]
+        for dim, ln in zip(range(self.nlinks), self.link_names):
+            plt.plot(trunc[:, dim], label=ln)
+        plt.xlabel('Time')
+        plt.ylabel('Activation')
+        plt.title('Link strengths')
+        plt.legend()
         plt.show()
 
 
 if __name__ == '__main__':
     file = './test.yaml'
     sent_len = 3
-#    corp = [['the', 'dog']]
+#    corp = [['the', 'dog'], ['an', 'cat']]
     corp = [['the', 'dog', 'eats'],
             ['an', 'cat', 'eats'],
             ['dog', 'dog', 'eats']]
@@ -605,19 +636,23 @@ if __name__ == '__main__':
     sys.calculate_local_harmonies()
     sys.locate_attrs()
 #    final, data = sys.single_run(['an', 'cat'])
-    final, data = sys.single_run(['the', 'dog'])
+#    final, data = sys.single_run(['the', 'dog'])
 #    final, data = sys.single_run(['dog', 'eats'])
-#    final, data = sys.single_run(['the', 'dog', 'eats'])
+    final, data = sys.single_run(['the', 'dog', 'eats'])
 #    final, data = sys.single_run(['dog', 'dog', 'eats'])
 #    final, data = sys.single_run(['an', 'cat', 'eats'])
 #    final, data = sys.single_run(['dog', 'sees', 'the', 'cat'])
 #    final, data = sys.single_run(['the', 'dog', 'sees', 'the', 'cat'])
     sns.distplot(sys.local_harmonies, kde=False, rug=True)
+    plt.title('Distribution of $h_i$')
     plt.show()
     sys.plot_trace()
+    sys.plot_links()
     sys.plot_harmony()
     print(sys.which_nonzero(np.round(final)))
     print(data)
+    mc = sys.many_runs(100, corp[0])
+    print(mc.groupby('CenterNr').describe())
 
     # Saving data:
 #    import pickle
