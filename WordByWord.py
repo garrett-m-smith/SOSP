@@ -44,72 +44,24 @@ For now at least, don't use root/apex node
 """
 
 import yaml
-from itertools import product, permutations, chain
+from itertools import product
 from sympy.utilities.iterables import multiset_permutations
 import numpy as np
-# from numba import jit
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import seaborn as sns
-from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop#,\
-#    iterate_bc, calc_harmony_bc
-
-
-"""New approach: for i in range(max_links), append result of
-itertools.permutations to a list containing i 1s and nlink_dims-i 0s, then
-get the unique ones.
-"""
+from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop
 
 
 def gen_nlinks_vectors(nlink_dims, maxlinks):
-#    lconfigs = [[0] * nlink_dims]
     lconfigs = []
     for i in range(0, maxlinks+1):
         base = [0]*nlink_dims
         if i > 0:
             base[:i] = [1]*i
         perms = multiset_permutations(base)
-#        perms = list(map(list, permutations(base)))
-#        ptuple = map(tuple, perms)
-#        perms_unique = list(dict.fromkeys(ptuple))
         lconfigs.extend([i for i in perms])
-#        lconfigs.append(perms)
-#    ltuple = map(tuple, lconfigs)
-#    lunique = list(dict.fromkeys(ltuple))
     return lconfigs  # chain(*lconfigs)
-
-
-#def gen_nlinks_vectors(link_names, maxlinks):
-#    nlink_dims = len(link_names)
-#    lconfigs = [[0] * nlink_dims]
-#    for i in range(1, maxlinks+1):
-#        base = [0]*nlink_dims
-#        if i > 0:
-#            base[:i] = [1]*i
-#        perms = list(map(list, permutations(base)))
-##        ptuple = map(tuple, perms)
-##        perms_unique = list(dict.fromkeys(ptuple))
-#        lconfigs.extend([i for i in perms])
-#    ltuple = map(tuple, lconfigs)
-#    lunique = list(dict.fromkeys(ltuple))
-#    return lunique
-
-
-#@jit(nopython=True)
-#def gen_nlinks_vectors(link_names, nlinks):
-#        """Returns all of the link activation vectors that have only nlinks.
-#        Probably need to do some pruning before this step, because it generates
-#        ndep^len(link_names) vectors before pruning out the ones with too many
-#        links.
-#        """
-        # Generates the cartesian product of [0, 1] with itself repeated as
-        # many times as needed, i.e., for the length of link_names
-#        too_many_links = product([0, 1], repeat=len(link_names))
-##        too_many_links = (i for i in product([0, 1], repeat=len(link_names)))
-        # Gives only the link activation vectors with fewer than nlinks
-#        pruned = [x for x in too_many_links if sum(x) <= nlinks]
-##        links = gen_nlinks_vectors(link_names, self.nlinks)
-#        return list(map(list, pruned))
 
 
 class Struct(object):
@@ -189,6 +141,10 @@ class Struct(object):
                     full_corp.append(seq[:i+1] + ['EMPTY']*(len(seq)-i-1))
             self.seq_names = full_corp
 
+    def set_params(self, **kwargs):
+        for param, val in kwargs.items():
+            setattr(self, param, val)
+
     def _import_lexicon(self, file):
         with open(file, 'r') as stream:
             lex = yaml.safe_load(stream)
@@ -265,26 +221,20 @@ class Struct(object):
         under the constraints of SOSP
         """
         link_names = self._name_links()
-#        link_vecs = self._gen_nlinks_vectors(link_names, self.max_links)
         nlink_dims = len(link_names)
         link_vecs = gen_nlinks_vectors(nlink_dims, self.max_links)
-#        link_vecs_it = gen_nlinks_vectors(nlink_dims, self.max_links)
-#        link_vecs = list(link_vecs_it)
         # A little kludgy, but works for now...
         if self.max_sent_length == 2:
             return(link_vecs)
-#            return(list(link_vecs_it))
         to_rm = []
         to_keep = []
         for i, lvec in enumerate(link_vecs):
-#        for i, lvec in enumerate(link_vecs_it):
             # Remove vectors that have the same word attached twice as a dep.
             for word_nr in range(self.max_sent_length):
                 dim_per_word = self.ndep * (self.max_sent_length-1)
                 init = word_nr*dim_per_word
                 idx = slice(init, init+dim_per_word)
                 if sum(lvec[idx]) >= self.max_links:
-#                if sum(lvec[idx]) <= self.max_links:
                     to_rm.append(i)
 #                    to_keep.append(lvec)
                 # Next, rm vectors with more than one thing attached to the
@@ -294,9 +244,7 @@ class Struct(object):
                     dep_idx = [j for j, w in enumerate(link_names)
                                if word_str in w]
                     if sum([lvec[k] for k in dep_idx]) >= self.max_links:
-#                    if sum([lvec[k] for k in dep_idx]) <= self.max_links:
                         to_rm.append(i)
-#                        to_keep.append(lvec)
             # Now rm links that form cycles
             for wn in range(self.max_sent_length-1):
                 w0 = wn
@@ -307,12 +255,9 @@ class Struct(object):
                     s1 = '_'.join(['L', 'W' + str(w1), 'W' + str(w0), d])
                     idx1 = link_names.index(s1)
                     if lvec[idx0] == 1 and lvec[idx1] == 1:
-#                    if not (lvec[idx0] == 1 and lvec[idx1] == 1):
                         to_rm.append(i)
-#                        to_keep.append(lvec)
             # Finally, remove links that aren't possible with the vocabulary
         return [link_vecs[k] for k in range(len(link_vecs)) if k not in to_rm]
-#        return to_keep
 
     def _name_links(self):
         print('Naming links...')
@@ -387,8 +332,6 @@ class Struct(object):
                     empties = ['W' + str(i) for i in
                                range(first_empty, self.max_sent_length)]
                     # Indexing the dimensions that have links to EMPTYs
-#                    empty_idx = [i for i, ln in enumerate(link_names) for e in
-#                                 empties if e not in ln]
                     empty_idx = [i for i, ln in enumerate(link_names) for e in
                                  empties if e in ln]
                 except ValueError:
@@ -534,7 +477,6 @@ class Struct(object):
         phon[self.idx_phon_dict[word]] = 1.0
         whole_vec = np.zeros(self.ndim_per_position * (self.max_sent_length
                                                        - pos))
-#        whole_vec = np.concatenate([phon, word_vec, dep_feats])
         whole_vec[:self.nphon_forms] = phon
         whole_vec[self.nphon_forms:self.nphon_forms+self.nfeatures] = word_vec
         whole_vec[self.nphon_forms+self.nfeatures:
@@ -542,13 +484,9 @@ class Struct(object):
             = dep_feats
         updated_state = state_vec.copy()
         start = pos*self.ndim_per_position
-#        stop = (start + self.nphon_forms + self.nfeatures
-#                + self.ndep*self.nfeatures)
         stop = self.ndim - self.nlinks
         idx = slice(start, stop)
         updated_state[idx] = whole_vec
-#        if pos < self.max_sent_length-1:
-#            updated_state[slice(stop, stop+self.ndim_per_position)] = 0.
         return updated_state
 
     def neg_harmony(self, x, centers, local_harmonies, gamma):
@@ -566,7 +504,6 @@ class Struct(object):
             extremum = minimize(self.neg_harmony, self.centers[c],
                                 args=(self.centers, self.local_harmonies,
                                       self.gamma), method='L-BFGS-B',
-                                      #method='Newton-CG',
                                 jac=self.jac_neg_harmony)
             attrs[c] = extremum.x
         unique_attrs = np.unique(np.round(attrs, 6), axis=0)
@@ -593,15 +530,13 @@ class Struct(object):
         # Pre-generate the noise for speed
         noise = (np.sqrt(2 * self.noise_mag * self.tau)
                  * np.random.normal(0, 1, self.state_hist.shape))
-#        noise = np.zeros(self.state_hist.shape)
         t = 0
         word_t = 0  # for keeping track of max amt. of time ea. word can get
-#        alpha = 0.001  # parameter for using the baseline constraint dyn.
-        data.append([curr_pos, seq[curr_pos], t])
+#        data.append([curr_pos, seq[curr_pos], t])
         while t < self.max_time-1:
             not_close = self.stopping_crit(self.state_hist[t], self.attrs,
                                            self.tol)
-            if not_close:  # and word_t < 500:
+            if not_close:
                 self.state_hist[t+1, ] = (self.state_hist[t, ]
                                           + self.tau *
                                           iterate(self.state_hist[t, ],
@@ -616,6 +551,7 @@ class Struct(object):
                 t += 1
                 word_t += 1
             else:
+                data.append([curr_pos, seq[curr_pos], word_t])
                 try:
                     print('Inputting new word')
                     curr_pos += 1
@@ -626,7 +562,7 @@ class Struct(object):
                                                    self.centers,
                                                    self.local_harmonies,
                                                    self.gamma)
-                    data.append([curr_pos, seq[curr_pos], word_t])
+#                    data.append([curr_pos, seq[curr_pos], word_t])
                     t += 1
                     word_t = 0
                 except:
@@ -639,7 +575,6 @@ class Struct(object):
     def plot_trace(self):
         trunc = self.state_hist[~np.all(self.state_hist == 0, axis=1)]
         plt.plot(trunc)
-#        plt.ylim(-0.01, 1.01)
         plt.xlabel('Time')
         plt.ylabel('Activation')
         plt.show()
@@ -647,7 +582,6 @@ class Struct(object):
     def plot_harmony(self):
         trunc = self.harmony[self.harmony != 0]
         plt.plot(trunc)
-#        plt.ylim(-0.01, 1.01)
         plt.xlabel('Time')
         plt.ylabel('Harmony')
         plt.show()
@@ -655,12 +589,12 @@ class Struct(object):
 
 if __name__ == '__main__':
     file = './test.yaml'
-    sent_len = 4
+    sent_len = 3
 #    corp = [['the', 'dog']]
-#    corp = [['the', 'dog', 'eats'],
-#            ['an', 'cat', 'eats'],
-#            ['dog', 'dog', 'eats']]
-    corp = [['dog', 'sees', 'the', 'cat']]
+    corp = [['the', 'dog', 'eats'],
+            ['an', 'cat', 'eats'],
+            ['dog', 'dog', 'eats']]
+#    corp = [['dog', 'sees', 'the', 'cat']]
 #    corp = [['the', 'dog', 'sees', 'the', 'cat']]
     # Missing link cost seems to need to be not too small, otherwise it can't
     # get to the attractors with EMPTYs for not-yet-seen words
@@ -671,12 +605,12 @@ if __name__ == '__main__':
     sys.calculate_local_harmonies()
     sys.locate_attrs()
 #    final, data = sys.single_run(['an', 'cat'])
-#    final, data = sys.single_run(['the', 'dog'])
+    final, data = sys.single_run(['the', 'dog'])
 #    final, data = sys.single_run(['dog', 'eats'])
 #    final, data = sys.single_run(['the', 'dog', 'eats'])
 #    final, data = sys.single_run(['dog', 'dog', 'eats'])
 #    final, data = sys.single_run(['an', 'cat', 'eats'])
-    final, data = sys.single_run(['dog', 'sees', 'the', 'cat'])
+#    final, data = sys.single_run(['dog', 'sees', 'the', 'cat'])
 #    final, data = sys.single_run(['the', 'dog', 'sees', 'the', 'cat'])
     sns.distplot(sys.local_harmonies, kde=False, rug=True)
     plt.show()
@@ -684,3 +618,12 @@ if __name__ == '__main__':
     sys.plot_harmony()
     print(sys.which_nonzero(np.round(final)))
     print(data)
+
+    # Saving data:
+#    import pickle
+#    with open('sosp_test_5word.pkl', 'wb') as output:
+#        pickle.dump(sys, output, -1)
+
+    # Importing data:
+#    with open('sosp_test_5word.pkl', 'rb') as input:
+#        sys = pickle.load(input)
