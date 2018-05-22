@@ -50,7 +50,7 @@ import numpy as np
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import seaborn as sns
-from dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop
+from .dynamics import calc_harmony, iterate, euclid_stop, vel_stop, cheb_stop
 import pandas as pd
 
 
@@ -134,13 +134,17 @@ class Struct(object):
                         for amb in ambig_forms:
                             rep = [w if w is not word else amb for w in seq]
                             disamb.append(rep)
-                        del disamb[corpus.index(seq)]
+#                        del disamb[corpus.index(seq)]
+                        del disamb[disamb.index(seq)]
             # Also need to add partial subsequences from seqs in corpus
             full_corp = disamb.copy()
             for seq in disamb:
                 for i in range(len(seq)-1):
                     full_corp.append(seq[:i+1] + ['EMPTY']*(len(seq)-i-1))
-            self.seq_names = full_corp
+            corp_tuple = map(tuple, full_corp)
+            corp_unique = list(map(list, dict.fromkeys(corp_tuple)))
+#            self.seq_names = full_corp
+            self.seq_names = corp_unique
 
     def set_params(self, **kwargs):
         for param, val in kwargs.items():
@@ -472,7 +476,9 @@ class Struct(object):
             if self.lexicon[w]['dependents'] is not None:
                 idx = slice(i*self.nfeatures, i*self.nfeatures+self.nfeatures)
                 for d in self.lexicon[w]['dependents']:
-                    dep_feats[idx] = np.array(self.lexicon[w]['dependents'][d])
+                    # Getting avg. of deps in case the word has multiple senses
+                    dep_feats[idx] += np.array(self.lexicon[w]['dependents'][d])
+        dep_feats /= len(ambig_words)
         # Finally, turn on the averaged features at the correct possition
         phon = np.zeros(self.nphon_forms)
         phon[self.idx_phon_dict[word]] = 1.0
@@ -533,7 +539,6 @@ class Struct(object):
                  * np.random.normal(0, 1, self.state_hist.shape))
         t = 0
         word_t = 0  # for keeping track of max amt. of time ea. word can get
-#        data.append([curr_pos, seq[curr_pos], t])
         while t < self.max_time-1:
             not_close = self.stopping_crit(self.state_hist[t], self.attrs,
                                            self.tol)
@@ -578,16 +583,24 @@ class Struct(object):
         print('Run number:')
         data_list = []
         for run in range(n_runs):
+            curr_data = []
             if run % (n_runs // 10) == 0:
                 print('[{}] '.format(run), end='')
-            final_st, _ = self.single_run(seq)
+            final_st, trial_data = self.single_run(seq)
+            for w in trial_data:
+                curr_data.append(w)
             final_rounded = np.rint(final_st)
             final_rounded += 0.  # getting rid of negative zeros from rounding
-            t = self.state_hist[~np.all(self.state_hist == 0, axis=1)].shape[0]
+#            t = self.state_hist[~np.all(self.state_hist == 0, axis=1)].shape[0]
             for center in range(self.centers.shape[0]):
                 if np.all(final_rounded == self.centers[center,]):
-                    data_list.append([center, t])
-        return pd.concat([pd.DataFrame([i], columns=('CenterNr', 'Time',))
+#                    data_list.append(trial_data.extend([run, center, t]))
+                    to_append = [it + [run, center] for it in curr_data]
+                    for it in to_append:
+                        data_list.append(it)
+        return pd.concat([pd.DataFrame([i], columns=('WordNr', 'Word',
+                                                     'WordRT', 'RunNr',
+                                                     'FinalCenterNr'))
                           for i in data_list])
 
     def plot_trace(self):
@@ -619,7 +632,7 @@ class Struct(object):
 
 
 if __name__ == '__main__':
-    file = './test.yaml'
+    file = '../test.yaml'
     sent_len = 3
 #    corp = [['the', 'dog'], ['an', 'cat']]
     corp = [['the', 'dog', 'eats'],
@@ -651,8 +664,8 @@ if __name__ == '__main__':
     sys.plot_harmony()
     print(sys.which_nonzero(np.round(final)))
     print(data)
-    mc = sys.many_runs(100, corp[0])
-    print(mc.groupby('CenterNr').describe())
+    mc = sys.many_runs(10, corp[0])
+    print(mc.groupby(['WordNr']).agg({'WordRT':['mean', 'std', 'min', 'max']}))
 
     # Saving data:
 #    import pickle
