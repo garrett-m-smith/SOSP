@@ -3,48 +3,64 @@
 EMPTY:
     phon_form: EMPTY
     head: [0, 0, 0, 0, 0]
+    gov_req: True
     dependents: !!null
+    dep_req: !!null
 
 the_sg:
     phon_form: the
     head: [1, 0, 0, 1, 0]
+    gov_req: True
     dependents: !!null
+    dep_req: !!null
 
 the_pl:
     phon_form: the
     head: [1, 0, 0, 0, 1]
+    gov_req: True
     dependents: !!null
+    dep_req: !!null
 
 an:
     phon_form: an
     head: [1, 0, 0, 1, 0]
+    gov_req: True
     dependents: !!null
+    dep_req: !!null
 
 dog:
     phon_form: dog
     head: [0, 1, 0, 1, 0]
+    gov_req: True
     dependents:
         Det: [1, 0, 0, 1, 0]
+    dep_req: [True]
 
 cat:
     phon_form: cat
     head: [0, 1, 0, 1, 0]
+    gov_req: True
     dependents:
         Det: [1, 0, 0, 1, 0]
+    dep_req: [True]
 
 eats:
     phon_form: eats
     head: [0, 0, 1, 1, 0]
+    gov_req: False
     dependents:
         Subj: [0, 1, 0, 1, 0]
 #        DO: [0, 1, 0, 1, 0]
+    dep_req: [True]
 
 sees:
     phon_form: sees
     head: [0, 0, 1, 1, 0]
+    gov_req: False
     dependents:
         Subj: [0, 1, 0, 1, 0]
         DO: [0, 1, 0, 1, 0]
+    dep_req: [True, False]
 
 #sees_DO_pl:
 #    phon_form: sees
